@@ -11,10 +11,13 @@
     "slippery_range_end" : 40,
     "slippery_factor" : 1.45,
     "average_speed_ped" : 1.5,
-    "car_x_init" : 25,
-    "car_v_init" : 2,
+    "car_x_init" : 10,
+    "car_v_init" : 5,
     "ped_x_init" : 40, 
     "ped_y_init" : 0,
     "avg_ped_vel" : 1.9,
-    "std_ped_vel" : 1
+    "std_ped_vel" : 1,
+    "car_width" : 3,
+    "car_height" : 2,
+    "car_y" : 5
 }

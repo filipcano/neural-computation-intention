@@ -4,7 +4,6 @@ import json, os, docker, scipy
 class TrafficModel:
     def __init__(self, params_file):
         # params_file can be a dict or a path to a json file
-        pass
         if isinstance(params_file, str):
             with open(params_file, 'r') as fp:
                 params = json.load(fp)
@@ -18,7 +17,10 @@ class TrafficModel:
             "crosswalk_pos",
             "crosswalk_width",
             "max_speed_car",
-            "max_speed_ped"
+            "max_speed_ped", 
+            "car_width",
+            "car_height", 
+            "car_y"
         ]
         self.int_vars = [
             "max_accel_car",
@@ -52,7 +54,8 @@ class TrafficModel:
             mdp_string += f"const int {i} = {self.params[i]};\n"
         
         mdp_string += f"formula is_slippery = (car_x > {self.params['slippery_range_start']}) & (car_x < {self.params['slippery_range_end']});\n"
-        # mdp_string += f"formula crash = (turn=2) &  (car_v > 0) & ((ped_x >= car_x+car_width-car_v) & (ped_x <= car_x + car_width)) & ((ped_y >= car_y) & (ped_y <= car_y + car_height));\n" # TODO: check correctness of the formula
+        mdp_string += f"formula crash = (turn=1) &  (car_v > 0) & ((ped_x >= car_x+car_width-car_v) & (ped_x <= car_x + car_width)) & ((ped_y >= car_y - car_height/2) & (ped_y <= car_y + car_height/2));\n" # TODO: check correctness of the formula
+        mdp_string += f"formula not_let_pass = (car_x > ped_x) & (ped_y < sidewalk_height + crosswalk_width -1);\n"
 
         mdp_string += f"formula accelerate = true;\n"
         mdp_string += f"formula brake = true;\n"
@@ -147,7 +150,10 @@ class TrafficModel:
         mdp_string += "\nmodule Ped\n"
         mdp_string += f"  ped_x : [min_street_length..max_street_length] init {self.params['ped_x_init']};\n"
         mdp_string += f"  ped_y : [0..sidewalk_height + crosswalk_width] init {self.params['ped_y_init']};\n\n"
-        basic_guard = "  [] (turn = 1)"
+
+        mdp_string += f"[] (turn = 1) & (crash) -> (crashed'=1) & (turn'=0);\n"
+
+        basic_guard = "  [] (turn = 1) & (!crash)"
         
         mdp_string += f"{basic_guard} & (after_cross) -> \n"
         p_left = 0.3
@@ -205,21 +211,23 @@ class TrafficModel:
 def main():
     TM = TrafficModel("params_files/params_example.json")
     mdp_string = TM.produce_mdp()
-    with open("aux.pm", 'w') as fp:
+    mdp_temp_path = "tmp/mdp.pm"
+    with open(mdp_temp_path, 'w') as fp:
         fp.write(mdp_string)
 
     prism_path = "/home/fcano/IAIKWork/Accountability/prism-4.7-linux64/bin/prism"
     path_length = 100
     trace_filepath = "trace.txt"
-    # os.system("{} aux.pm -simpath {} {} >/dev/null 2>&1".format(prism_path, path_length, trace_filepath))
-    os.system("{} aux.pm -simpath {} {} >{}".format(prism_path, path_length, trace_filepath, "merda.txt"))
+    os.system("{} {} -simpath {} {} >{}".format(prism_path, mdp_temp_path, path_length, trace_filepath, "merda.txt"))
     
 
     client = docker.from_env()     
-    aux = client.containers.run("lposch/tempest-devel-traces:latest", "storm --prism aux.pm", volumes = {os.getcwd(): {'bind': '/mnt/vol1', 'mode': 'rw'}}, working_dir = "/mnt/vol1", stderr = True)
+    aux = client.containers.run("lposch/tempest-devel-traces:latest", f"storm --prism {mdp_temp_path} --prop prism_files/mdp_props.pm", volumes = {os.getcwd(): {'bind': '/mnt/vol1', 'mode': 'rw'}}, working_dir = "/mnt/vol1", stderr = True)
     outstr = aux.decode("utf-8")
     print(outstr)
     # os.remove('aux.pm')
+
+    # aux = client.containers.run("lposch/tempest-devel-traces:latest", "storm --prism aux.pm --prop prism_files/mdp_props.pm --trace-input trace.txt --exportresult mdpprops.json --buildstateval", volumes = {os.getcwd(): {'bind': '/mnt/vol1', 'mode': 'rw'}}, working_dir = "/mnt/vol1", stderr = True)
 
 if __name__ == "__main__":
     main()
