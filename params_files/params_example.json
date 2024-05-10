@@ -10,7 +10,6 @@
     "slippery_range_start": 20,
     "slippery_range_end" : 40,
     "slippery_factor" : 1.45,
-    "average_speed_ped" : 1.5,
     "car_x_init" : 10,
     "car_v_init" : 5,
     "ped_x_init" : 40, 

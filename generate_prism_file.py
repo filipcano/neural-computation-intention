@@ -1,5 +1,9 @@
 import numpy as np
+import pandas as pd
 import json, os, docker, scipy
+from trace_convert import convert_tracesimpath_to_tracepm, convert_pm_model_to_trace_init
+
+DEBUG = True
 
 class TrafficModel:
     def __init__(self, params_file):
@@ -49,9 +53,12 @@ class TrafficModel:
         return True
 
     def produce_mdp(self):
+
         mdp_string = "mdp\n\n"
         for i in self.const_int_vars:
             mdp_string += f"const int {i} = {self.params[i]};\n"
+
+        mdp_string += "\n"
         
         mdp_string += f"formula is_slippery = (car_x > {self.params['slippery_range_start']}) & (car_x < {self.params['slippery_range_end']});\n"
         mdp_string += f"formula crash = (turn=1) &  (car_v > 0) & ((ped_x >= car_x+car_width-car_v) & (ped_x <= car_x + car_width)) & ((ped_y >= car_y - car_height/2) & (ped_y <= car_y + car_height/2));\n" # TODO: check correctness of the formula
@@ -60,6 +67,11 @@ class TrafficModel:
         mdp_string += f"formula accelerate = true;\n"
         mdp_string += f"formula brake = true;\n"
         mdp_string += f"formula noop = true;\n"
+        mdp_string += "\n"
+        mdp_string += 'label "not_let_pass" = not_let_pass;\n'
+        mdp_string += 'label "crash" = crash;\n'
+        mdp_string += "\n"
+
 
         mdp_string += "global turn : [0..1] init 0;\n"
         mdp_string += "global crashed : [0..1] init 0;\n"
@@ -208,6 +220,77 @@ class TrafficModel:
         mdp_string += "\nendmodule\n\n"
         return mdp_string
 
+    def simulate_trace(self, mdp_temp_path, tracesp_filepath):
+        prism_path = "/home/fcano/IAIKWork/Accountability/prism-4.7-linux64/bin/prism"
+        path_length = 100
+        os.system("{} {} -simpath {} {} >/dev/null 2>&1".format(prism_path, mdp_temp_path, path_length, tracesp_filepath))
+
+    def get_model_checking_time(self, aux):
+        model_construction_string = "Time for model construction: "
+        model_checking_string = "Time for model checking: "
+        outstr = aux.decode("utf-8")
+        # dockertime += time.process_time() - auxtimestart
+        time_model_construction = 0
+        time_model_checking = 0
+        for line in outstr.split('\n'):
+            if model_construction_string in line:
+                time_model_construction += float(line.split(model_construction_string)[-1].split('s.')[0])
+            if model_checking_string in line:
+                time_model_checking += float(line.split(model_checking_string)[-1].split('s.')[0])
+        res = ""
+        res += f"Time spent in model_construction is {time_model_construction} sec.\n"
+        res += f"Time spent in model_checking is {time_model_checking} sec.\n"
+        return res
+
+    def run_model_checking(self, mdp_temp_path, tracepm_filepath, values_temp_file):
+        client = docker.from_env()     
+        aux = client.containers.run("lposch/tempest-devel-traces:latest", f"storm --prism {mdp_temp_path} --prop prism_files/mdp_props.pm --trace-input {tracepm_filepath} --exportresult {values_temp_file} --buildstateval", volumes = {os.getcwd(): {'bind': '/mnt/vol1', 'mode': 'rw'}}, working_dir = "/mnt/vol1", stderr = True)
+        if DEBUG:
+            print(self.get_model_checking_time(aux))
+        for filename in os.listdir():
+            if values_temp_file in filename:
+                os.rename(filename, f"tmp/{filename}")
+        os.rename(f"tmp/{values_temp_file}", f"tmp/0{values_temp_file}")
+
+        valuesfiledict = {}
+        with open("prism_files/mdp_props.pm", "r") as fp:
+            columns = fp.readlines()
+        for i in range(len(columns)):
+            column = columns[i]
+            minmax = "Pmax" if "max" in column else "Pmin"
+            prop = "crash" if "crash" in column else "not_let_pass"
+            columns[i] = minmax + "-" + prop
+            valuesfiledict[i] = columns[i]
+        columns.append("state")
+        with open(tracepm_filepath, 'r') as fp:
+            rows = fp.read().split("\n")
+        states_as_dicts = {}
+        for row in rows:
+            statedict  = {}
+            splitfeatures = row.split("&")
+            for feat in splitfeatures:
+                key = feat.split("=")[0].replace(" ", "")
+                value = int(feat.split("=")[1])
+                statedict[key] = value
+            states_as_dicts[row] = statedict
+
+        df = pd.DataFrame(columns=columns)
+        df["state"] = rows
+
+        for i in valuesfiledict.keys():
+            with open(f"tmp/{i}{values_temp_file}", 'r') as fp:
+                data = json.load(fp)
+            for stateinfor in data:
+                found = 0
+                for idx in df.index:
+                    state = df.loc[idx, "state"]
+                    if states_as_dicts[state] == stateinfor["s"]:
+                        df.loc[idx, valuesfiledict[i]] = stateinfor["v"]
+                        found += 1
+                assert found == 1, f"Found {found} coincidences between states, something is wrong."
+        return df
+
+
 def main():
     TM = TrafficModel("params_files/params_example.json")
     mdp_string = TM.produce_mdp()
@@ -215,16 +298,25 @@ def main():
     with open(mdp_temp_path, 'w') as fp:
         fp.write(mdp_string)
 
-    prism_path = "/home/fcano/IAIKWork/Accountability/prism-4.7-linux64/bin/prism"
-    path_length = 100
-    trace_filepath = "trace.txt"
-    os.system("{} {} -simpath {} {} >{}".format(prism_path, mdp_temp_path, path_length, trace_filepath, "merda.txt"))
-    
+    tracesp_filepath = "tmp/trace.txt"
+    tracepm_filepath = "tmp/tracepm.txt"
+    TM.simulate_trace(mdp_temp_path, tracesp_filepath)
 
-    client = docker.from_env()     
-    aux = client.containers.run("lposch/tempest-devel-traces:latest", f"storm --prism {mdp_temp_path} --prop prism_files/mdp_props.pm", volumes = {os.getcwd(): {'bind': '/mnt/vol1', 'mode': 'rw'}}, working_dir = "/mnt/vol1", stderr = True)
-    outstr = aux.decode("utf-8")
-    print(outstr)
+    tracepm_string = convert_tracesimpath_to_tracepm(tracesp_filepath, tracepm_filepath)
+    mdp_string = convert_pm_model_to_trace_init(mdp_string, tracepm_string)
+    with open(mdp_temp_path, 'w') as fp:
+        fp.write(mdp_string)
+
+    values_temp_file = "mdpprops.json"
+
+    df = TM.run_model_checking(mdp_temp_path, tracepm_filepath, values_temp_file)
+
+    print(df)
+    df.to_csv("collected_data/data.csv")
+
+
+    
+    
     # os.remove('aux.pm')
 
     # aux = client.containers.run("lposch/tempest-devel-traces:latest", "storm --prism aux.pm --prop prism_files/mdp_props.pm --trace-input trace.txt --exportresult mdpprops.json --buildstateval", volumes = {os.getcwd(): {'bind': '/mnt/vol1', 'mode': 'rw'}}, working_dir = "/mnt/vol1", stderr = True)
