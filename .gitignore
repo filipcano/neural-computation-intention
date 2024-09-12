@@ -1,0 +1,7 @@
+tmp/*
+qtable*.npy
+animation.gif
+collected_data/*
+__pycache__/*
+.ipynb_checkpoints/*
+images/*

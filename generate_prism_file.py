@@ -146,6 +146,8 @@ class TrafficModel:
         mdp_string += "formula before_cross = (ped_y < sidewalk_height);\n"
         mdp_string += "formula after_cross = ped_y = sidewalk_height + crosswalk_width;\n"
 
+
+        ## MODULE PEDESTRIAN
         pedestrian_speeds = np.zeros(self.params["max_speed_ped"]+1)
         n = self.params["max_speed_ped"]
         mu = self.params["avg_ped_vel"]
@@ -158,7 +160,8 @@ class TrafficModel:
         for i in range(len(pedestrian_speeds)):
             pedestrian_speeds[i] = randomvar.pmf(i)
 
-
+        
+        
         mdp_string += "\nmodule Ped\n"
         mdp_string += f"  ped_x : [min_street_length..max_street_length] init {self.params['ped_x_init']};\n"
         mdp_string += f"  ped_y : [0..sidewalk_height + crosswalk_width] init {self.params['ped_y_init']};\n\n"
